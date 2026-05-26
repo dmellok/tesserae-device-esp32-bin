@@ -1,10 +1,10 @@
 # tesserae-esp32-bin-client
 
-Battery-powered ESP32-S3 firmware for the [Waveshare ESP32-S3-ePaper-13.3E6](https://www.waveshare.com/esp32-s3-epaper-13.3e6.htm) — a 13.3", 1200×1600, 6-colour Spectra E6 e-paper panel paired with an ESP32-S3-WROOM-2-N32R16V module.
+Battery-powered ESP32-S3 firmware that's the embedded client for the [Tesserae](https://github.com/dmellok/tesserae) server — drives a [Waveshare ESP32-S3-ePaper-13.3E6](https://www.waveshare.com/esp32-s3-epaper-13.3e6.htm) (13.3", 1200×1600, 6-colour Spectra E6 e-paper panel on an ESP32-S3-WROOM-2-N32R16V module).
 
 The device wakes on a timer, publishes a heartbeat with its battery state, pulls a retained MQTT message containing a `.bin` frame URL, downloads the panel-native 4-bpp buffer, paints the panel, and goes back to deep sleep. WiFi credentials and MQTT broker details are provisioned on first boot via a SoftAP captive portal.
 
-This is the embedded counterpart to the Tesserae server's `esp32_bin` renderer — Tesserae composes a frame, packs it into the panel-native 4 bpp `.bin` format, and publishes the URL **retained** on `tesserae/esp32/frame/bin` so a battery client can connect briefly, immediately receive the most recent frame URL (no waiting), and sleep again.
+Tesserae's `esp32_bin` renderer composes a frame, packs it into the panel-native 4 bpp `.bin` format, and publishes the URL **retained** on `tesserae/esp32/frame/bin` so a battery client can connect briefly, immediately receive the most recent frame URL (no waiting), and sleep again.
 
 ## Why retained MQTT + URL hash + WiFi-before-paint
 
