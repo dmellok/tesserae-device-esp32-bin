@@ -19,6 +19,25 @@ static void load_str(nvs_handle_t h, const char *key,
     }
 }
 
+/* esp-mqtt's uri parser rejects bare host:port; users typing the broker into
+ * the captive portal routinely leave the scheme off. Prepend mqtt:// in-place
+ * if none of the recognized schemes is present. */
+static void normalize_mqtt_uri(char *uri, size_t uri_sz)
+{
+    if (!uri || !uri[0]) return;
+    if (strncmp(uri, "mqtt://",  7) == 0) return;
+    if (strncmp(uri, "mqtts://", 8) == 0) return;
+    if (strncmp(uri, "ws://",    5) == 0) return;
+    if (strncmp(uri, "wss://",   6) == 0) return;
+
+    const char prefix[] = "mqtt://";
+    size_t plen = sizeof(prefix) - 1;
+    size_t ulen = strlen(uri);
+    if (ulen + plen + 1 > uri_sz) return;   /* no room; let esp-mqtt log the error */
+    memmove(uri + plen, uri, ulen + 1);
+    memcpy(uri, prefix, plen);
+}
+
 void mqtt_config_load(mqtt_config_t *out)
 {
     if (!out) return;
@@ -40,6 +59,9 @@ void mqtt_config_load(mqtt_config_t *out)
     load_str(h, NVS_KEY_MQTT_PASS,  out->pass,  sizeof(out->pass),  MQTT_DEFAULT_PASS);
 
     nvs_close(h);
+
+    normalize_mqtt_uri(out->uri, sizeof(out->uri));
+
     ESP_LOGI(TAG, "loaded uri='%s' topic='%s' user='%s'",
              out->uri, out->topic, out->user[0] ? out->user : "(none)");
 }
