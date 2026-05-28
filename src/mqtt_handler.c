@@ -210,11 +210,14 @@ esp_err_t mqtt_fetch_retained(mqtt_job_t *job, const char *heartbeat_json)
         .heartbeat_json = heartbeat_json,
     };
 
-    /* LWT: broker publishes this retained on ungraceful disconnect (keepalive
-     * timeout, TCP drop). On the next normal wake we overwrite it with the
-     * full heartbeat. esp_mqtt_client_stop() is graceful and doesn't trigger
-     * the will, so the published heartbeat survives across sleep cycles --
-     * the LWT only fires when the device actually goes dark. */
+    /* LWT: a NON-retained will. The broker delivers it to any live subscriber
+     * on ungraceful disconnect (keepalive timeout during deep sleep, TCP drop,
+     * power loss) so Tesserae learns the device went dark -- but because it is
+     * NOT retained it does not overwrite the retained heartbeat. That retained
+     * {...,"kind","panel_w","panel_h"} message is what survives across sleep
+     * cycles and feeds Tesserae's discovery/register flow; a retained will here
+     * would clobber it with a kind-less tombstone for the whole sleep window.
+     * (esp_mqtt_client_stop() is graceful and doesn't trigger the will at all.) */
     static const char k_lwt_payload[] = "{\"state\":\"offline\"}";
 
     esp_mqtt_client_config_t cfg = {
@@ -226,7 +229,7 @@ esp_err_t mqtt_fetch_retained(mqtt_job_t *job, const char *heartbeat_json)
             .msg     = k_lwt_payload,
             .msg_len = sizeof(k_lwt_payload) - 1,
             .qos     = 1,
-            .retain  = 1,
+            .retain  = 0,
         },
     };
     if (cfg_nvs.user[0]) {
