@@ -1,5 +1,6 @@
 #include "heartbeat.h"
 #include "app_config.h"
+#include "wifi_manager.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -8,7 +9,6 @@
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_log.h"
-#include "esp_netif.h"
 #include "esp_wifi.h"
 
 static const char *TAG = "hb";
@@ -89,16 +89,6 @@ static int current_rssi(void)
     return ap.rssi;
 }
 
-static void current_ip(char *out, size_t out_sz)
-{
-    out[0] = '\0';
-    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    if (!netif) return;
-    esp_netif_ip_info_t info;
-    if (esp_netif_get_ip_info(netif, &info) != ESP_OK) return;
-    snprintf(out, out_sz, IPSTR, IP2STR(&info.ip));
-}
-
 void heartbeat_format_json(char *dst, size_t dst_sz)
 {
     if (!dst || dst_sz == 0) return;
@@ -106,14 +96,18 @@ void heartbeat_format_json(char *dst, size_t dst_sz)
     int mv   = read_battery_mv();
     int pct  = mv_to_pct(mv);
     int rssi = current_rssi();
-    char ip[16];
-    current_ip(ip, sizeof(ip));
+    char ip[16] = {0};
+    wifi_manager_get_sta_ip(ip, sizeof(ip));
 
     ESP_LOGI(TAG, "battery=%d mV (%d%%), rssi=%d dBm, ip=%s, fw=%s",
              mv, pct, rssi, ip, FW_VERSION);
 
+    /* kind/panel_w/panel_h let Tesserae pre-fill the Register form for a
+     * discovered device. They're static for the device's lifetime but cheap
+     * to re-send each heartbeat. */
     snprintf(dst, dst_sz,
              "{\"battery_mv\":%d,\"battery_pct\":%d,\"rssi\":%d,"
-             "\"ip\":\"%s\",\"fw_version\":\"%s\"}",
-             mv, pct, rssi, ip, FW_VERSION);
+             "\"ip\":\"%s\",\"fw_version\":\"%s\","
+             "\"kind\":\"esp32_client\",\"panel_w\":%d,\"panel_h\":%d}",
+             mv, pct, rssi, ip, FW_VERSION, EPD_WIDTH, EPD_HEIGHT);
 }

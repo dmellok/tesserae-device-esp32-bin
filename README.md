@@ -4,7 +4,9 @@ Battery-powered ESP32-S3 firmware that's the embedded client for the [Tesserae](
 
 The device wakes on a timer, publishes a heartbeat with its battery state, pulls a retained MQTT message containing a `.bin` frame URL, downloads the panel-native 4-bpp buffer, paints the panel, and goes back to deep sleep. WiFi credentials and MQTT broker details are provisioned on first boot via a SoftAP captive portal.
 
-Tesserae's `esp32_bin` renderer composes a frame, packs it into the panel-native 4 bpp `.bin` format, and publishes the URL **retained** on `tesserae/esp32/frame/bin` so a battery client can connect briefly, immediately receive the most recent frame URL (no waiting), and sleep again.
+Tesserae's `esp32_bin` renderer composes a frame, packs it into the panel-native 4 bpp `.bin` format, and publishes the URL **retained** on `tesserae/<device_id>/frame/bin` so a battery client can connect briefly, immediately receive the most recent frame URL (no waiting), and sleep again.
+
+**Multiple panels:** each device has a `device_id` (default `esp32`) that prefixes its MQTT topics, so several ESP32 panels can share one broker and one Tesserae server. Set it from the setup portal — see [Provisioning & settings](#provisioning--settings).
 
 ## Why retained MQTT + URL hash + WiFi-before-paint
 
@@ -53,10 +55,11 @@ For "months of usage" with a typical update cadence, a 5000–10000 mAh single-c
 
 ```
 boot
+  ├─ double-tap RESET?               → serve LAN settings editor + mDNS → sleep/reboot
   ├─ cold boot (RESET / power-on)?   → paint 6-band colour splash (panel sanity check)
   ├─ no WiFi creds anywhere?         → captive portal → reboot
   ├─ STA connect fails?              → captive portal → reboot
-  ├─ publish heartbeat               (battery_mv/pct, rssi, ip, fw_version)
+  ├─ publish heartbeat               (battery_mv/pct, rssi, ip, fw_version, kind, panel_w/h)
   ├─ no retained MQTT message?       → sleep (nothing new to show)
   ├─ URL unchanged since last wake?  → sleep (skip ~30 s refresh, save ~0.6 mAh)
   ├─ fetch URL → validate length → paint
@@ -90,19 +93,39 @@ To skip the captive portal during iteration, copy [include/secrets.example.h](in
 
 For fast iteration without USB plugged in (e.g. headless testing), also define `DEV_DISABLE_SLEEP` in `secrets.h` — the firmware will loop on `DEV_LOOP_INTERVAL_S` (default 10 s) instead of deep-sleeping. With USB plugged in this is automatic; the manual flag is only needed otherwise.
 
+## Provisioning & settings
+
+All settings (WiFi SSID + password, MQTT broker URI + credentials, and `device_id`) are entered through the same HTML form, reachable two ways:
+
+**First-boot captive portal.** With no WiFi creds in NVS (fresh flash, or after `idf.py erase-flash`), the device brings up a SoftAP named `Tesserae-Setup` (password `tesserae`). Join it from a phone; the captive-portal prompt opens the form automatically. After submit the device reboots and joins your network.
+
+**Always-on settings editor (double-tap RESET).** Once the device is on the LAN you can re-open the form without erasing NVS: **tap the RESET button twice in quick succession** (the second tap within the first wake's few-second window). Instead of painting, the device serves the form on its STA IP and advertises it over mDNS at:
+
+```
+http://tesserae-<device_id>.local/
+```
+
+The form pre-fills the current SSID, broker URI, `device_id`, and username (passwords are never echoed — **leave a password field blank to keep the stored one**). Saving writes NVS and reboots to apply. The editor stays up for `PROVISION_PORTAL_TIMEOUT_S` (10 min) then deep-sleeps if you don't submit.
+
+> The double-tap trigger relies on the RESET button preserving RTC memory across resets, which is board-specific. If double-tap never opens the editor on your board, fall back to the captive portal (`idf.py erase-flash` then re-provision). The settings server has **no authentication** — it trusts the LAN; don't expose the device's IP beyond a network you control.
+
+**`device_id`** must be 2–32 chars: lowercase letters, digits, `-` or `_`, starting with a letter (same rule Tesserae enforces in `device.json`). It defaults to `esp32`, which matches Tesserae's built-in `esp32_client` kind. Changing it re-points every topic to `tesserae/<new_id>/…`.
+
+**Legacy migration.** Boards upgraded from the pre-multi-head firmware stored an `mqtt/topic` NVS key. On the first boot after upgrade the firmware extracts `<X>` from a `tesserae/<X>/frame/bin` value into the new `device_id` key and erases the old one (logged as `device_id initialized to '…' (migrated from legacy topic)`). Anything unrecognized — including the very old `inky/esp32/update` — falls back to `device_id=esp32`, which resolves to the same effective topics.
+
 ## MQTT contract
 
-The firmware uses three topics under the `tesserae/esp32/` namespace. The frame and config topics are read on every wake; the status topic is written on every wake.
+The firmware uses three topics under the `tesserae/<device_id>/` namespace (default `device_id` = `esp32`). The frame and config topics are read on every wake; the status topic is written on every wake.
 
 | Topic | Direction | Retained | QoS | Purpose |
 |---|---|---|---|---|
-| `tesserae/esp32/frame/bin` | server → device | yes | 1 | URL of the next `.bin` frame to render |
-| `tesserae/esp32/config` | server → device | yes | 1 | Runtime device settings (sleep interval) |
-| `tesserae/esp32/status` | device → broker | yes | 1 | Wake-time heartbeat + LWT |
+| `tesserae/<device_id>/frame/bin` | server → device | yes | 1 | URL of the next `.bin` frame to render |
+| `tesserae/<device_id>/config` | server → device | yes | 1 | Runtime device settings (sleep interval) |
+| `tesserae/<device_id>/status` | device → broker | yes | 1 | Wake-time heartbeat + LWT |
 
-All three topic names are overridable in `secrets.h` (`MQTT_DEFAULT_TOPIC`, `MQTT_DEFAULT_CONFIG_TOPIC`, `MQTT_DEFAULT_STATUS_TOPIC`). The frame topic is additionally runtime-overridable via the captive portal (stored in NVS); the config and status topics are compile-time only.
+All three topics are derived from `device_id` at runtime. Set `device_id` via the setup portal (stored in NVS) or bake a compile-time default with `MQTT_DEFAULT_DEVICE_ID` in `secrets.h`.
 
-The client also registers a **last-will-and-testament** on `tesserae/esp32/status` with `{"state":"offline"}` retained. The broker publishes that on ungraceful disconnect (keepalive timeout, TCP drop) so Tesserae can flag a probably-dead-battery device. On the next normal wake the full heartbeat overwrites the offline marker.
+The client also registers a **last-will-and-testament** on `tesserae/<device_id>/status` with `{"state":"offline"}` retained. The broker publishes that on ungraceful disconnect (keepalive timeout, TCP drop) so Tesserae can flag a probably-dead-battery device. On the next normal wake the full heartbeat overwrites the offline marker.
 
 ### Frame payload
 
@@ -153,7 +176,10 @@ Published once per wake, immediately after the broker connection succeeds and **
   "battery_pct": 67,
   "rssi": -42,
   "ip": "192.168.50.234",
-  "fw_version": "0.1.0"
+  "fw_version": "0.3.0",
+  "kind": "esp32_client",
+  "panel_w": 1200,
+  "panel_h": 1600
 }
 ```
 
@@ -161,9 +187,11 @@ Published once per wake, immediately after the broker connection succeeds and **
 - `battery_pct` — 0–100, derived from a two-segment piecewise-linear Li-Po curve.
 - `rssi` — wifi signal in dBm at the time of the heartbeat.
 - `ip` — STA IPv4 address.
-- `fw_version` — firmware version string from [include/app_config.h](include/app_config.h).
+- `fw_version` — firmware version string (set via `build_flags` in `platformio.ini`).
+- `kind` — always `"esp32_client"`; lets Tesserae pre-fill the kind when registering a discovered device.
+- `panel_w` / `panel_h` — panel pixel dimensions (`EPD_WIDTH` / `EPD_HEIGHT`), so the Register form pre-fills the panel size.
 
-Retained, so Tesserae can show "last known state" without the device being awake. A heartbeat significantly older than ~3× the configured sleep interval is a probably-dead-battery signal — Tesserae surfaces these in its UI.
+Retained, so Tesserae can show "last known state" without the device being awake. A heartbeat significantly older than ~3× the configured sleep interval is a probably-dead-battery signal — Tesserae surfaces these in its UI. The `kind`/`panel_*` keys feed Tesserae's **Discovered devices** strip: an unregistered `device_id` heartbeating on `tesserae/+/status` shows up with a one-click Register button, pre-populated from these fields.
 
 ### Manual test push
 
@@ -172,12 +200,12 @@ mosquitto_pub -t tesserae/esp32/frame/bin -r \
   -m '{"url":"http://192.168.1.10:8000/renders/test.bin"}'
 ```
 
-The next wake will fetch and paint that frame.
+(Replace `esp32` with your `device_id` if you changed it.) The next wake will fetch and paint that frame.
 
 ## Troubleshooting
 
-- **No captive portal on first boot** — button-mash the RESET button. The portal triggers when WiFi creds aren't present in NVS, so a fresh board (or one wiped with `idf.py erase-flash`) brings it up automatically. The AP is `Tesserae-Setup` (password `tesserae`).
-- **STA connects but no paint** — broker unreachable from the ESP32's IP. Check `ip` in the latest retained heartbeat on `tesserae/esp32/status` and ping the broker URI from that subnet. Common causes: broker bound to `127.0.0.1`, firewall, VLAN isolation.
+- **No captive portal on first boot** — the captive portal triggers when WiFi creds aren't present in NVS, so a fresh board (or one wiped with `idf.py erase-flash`) brings up the `Tesserae-Setup` AP (password `tesserae`) automatically. To re-open settings on an already-provisioned board, double-tap RESET (see [Provisioning & settings](#provisioning--settings)).
+- **STA connects but no paint** — broker unreachable from the ESP32's IP. Check `ip` in the latest retained heartbeat on `tesserae/<device_id>/status` and ping the broker URI from that subnet. Common causes: broker bound to `127.0.0.1`, firewall, VLAN isolation.
 - **Paint starts and stops** — `frame size mismatch` in the serial log means the URL served something that isn't 960,000 bytes. Verify with `curl -sI <url>` that `Content-Length: 960000`.
 - **Splash colours look wrong** — panel ribbon seated badly or wrong panel rev. The init byte sequence in [src/epd_driver.c](src/epd_driver.c) is panel-specific and must not be modified.
 - **Battery drains in days, not months** — usually means WiFi is being held during the panel refresh. Confirm `wifi_sta_stop()` runs *before* `epd_init()` in [src/main.c](src/main.c). On a USB power meter, the 30 s refresh phase should sit around 60 mA, not 140 mA.
@@ -186,20 +214,21 @@ The next wake will fetch and paint that frame.
 
 ```
 tesserae-esp32-bin-client/
-├── platformio.ini             # board, partitions, monitor settings
+├── platformio.ini             # board, partitions, monitor, FW_VERSION build flag
 ├── partitions.csv             # 14 MB factory app + NVS
 ├── sdkconfig.defaults         # PSRAM, mbedTLS cert bundle, MQTT 3.1.1
 ├── include/
-│   ├── app_config.h           # pinout + all behaviour tunables + FW_VERSION
+│   ├── app_config.h           # pinout + all behaviour tunables
 │   ├── secrets.example.h      # template for local credential overrides
 │   └── secrets.h              # (git-ignored) your local overrides
 └── src/
-    ├── main.c                 # boot → splash → connect → render → sleep
+    ├── main.c                 # boot → (double-tap?) settings → splash → connect → render → sleep
+    ├── idf_component.yml       # managed deps (espressif/mdns)
     ├── epd_driver.{c,h}       # Waveshare 13.3E6 panel driver + colour-bar splash
-    ├── heartbeat.{c,h}        # battery / RSSI / IP / fw_version JSON formatter
-    ├── wifi_manager.{c,h}     # NVS-backed STA connect with retry
-    ├── provisioning.{c,h}     # SoftAP + DNS hijack + HTTP form captive portal
-    ├── mqtt_config.{c,h}      # NVS-backed broker URI / topic / credentials
+    ├── heartbeat.{c,h}        # battery / RSSI / IP / fw_version / kind / panel size JSON
+    ├── wifi_manager.{c,h}     # NVS-backed STA connect + STA-IP / SSID accessors
+    ├── provisioning.{c,h}     # captive portal + always-on LAN settings editor + mDNS
+    ├── mqtt_config.{c,h}      # NVS-backed broker URI / device_id / credentials + migration
     ├── mqtt_handler.{c,h}     # single-shot subscribe + dispatch + heartbeat + LWT
     ├── image_fetcher.{c,h}    # HTTP download into PSRAM
     └── image_decoder.{c,h}    # strict 960000-byte panel-native pass-through
@@ -209,7 +238,8 @@ No tests — smoke-testing on real hardware is the workflow. Recommended validat
 
 1. Flash a fresh board, walk it through the captive portal.
 2. `mosquitto_pub -t tesserae/esp32/frame/bin -r -m '{"url":"http://.../test.bin"}'` and confirm the panel paints.
-3. Pull battery, attach to a USB current meter, and log average draw over 24 h. Anything above ~35 mAh/day for the photo-frame use case means WiFi is leaking on somewhere.
+3. Double-tap RESET and confirm `http://tesserae-esp32.local/` (or the device IP) serves the settings form pre-filled with live values.
+4. Pull battery, attach to a USB current meter, and log average draw over 24 h. Anything above ~35 mAh/day for the photo-frame use case means WiFi is leaking on somewhere.
 
 ## Credits
 

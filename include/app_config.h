@@ -53,8 +53,12 @@
 /* ------------------------------------------------------------------ */
 
 /* Reported in the status heartbeat so Tesserae can show which firmware
- * each device is running. Bump on every release. */
-#define FW_VERSION         "0.1.0"
+ * each device is running. The authoritative value is set in platformio.ini
+ * (build_flags = -DFW_VERSION=\"x.y.z\"); this is just a fallback so the
+ * file still compiles outside PlatformIO. */
+#ifndef FW_VERSION
+#define FW_VERSION         "0.0.0-dev"
+#endif
 
 /* How long to deep-sleep between MQTT checks. 15 minutes is a good
  * trade for a 6-color panel that itself takes ~30s to refresh. */
@@ -96,14 +100,11 @@
 #ifndef MQTT_DEFAULT_URI
 #define MQTT_DEFAULT_URI    "mqtt://homeassistant.local:1883"
 #endif
-#ifndef MQTT_DEFAULT_TOPIC
-#define MQTT_DEFAULT_TOPIC  "tesserae/esp32/frame/bin"
-#endif
-#ifndef MQTT_DEFAULT_CONFIG_TOPIC
-#define MQTT_DEFAULT_CONFIG_TOPIC "tesserae/esp32/config"
-#endif
-#ifndef MQTT_DEFAULT_STATUS_TOPIC
-#define MQTT_DEFAULT_STATUS_TOPIC "tesserae/esp32/status"
+/* Per-device topic namespace is tesserae/<device_id>/{frame/bin,config,status}.
+ * device_id defaults to "esp32" (matches Tesserae's built-in esp32_client kind);
+ * a second physical panel just needs a different id, set via the portal. */
+#ifndef MQTT_DEFAULT_DEVICE_ID
+#define MQTT_DEFAULT_DEVICE_ID  "esp32"
 #endif
 #ifndef MQTT_DEFAULT_USER
 #define MQTT_DEFAULT_USER   ""
@@ -129,11 +130,17 @@
 #define NVS_KEY_SSID       "ssid"
 #define NVS_KEY_PASS       "pass"
 
-#define NVS_NS_MQTT        "mqtt"
-#define NVS_KEY_MQTT_URI   "uri"
-#define NVS_KEY_MQTT_TOPIC "topic"
-#define NVS_KEY_MQTT_USER  "user"
-#define NVS_KEY_MQTT_PASS  "pass"
+#define NVS_NS_MQTT          "mqtt"
+#define NVS_KEY_MQTT_URI     "uri"
+#define NVS_KEY_MQTT_TOPIC   "topic"      /* legacy; read once at migration, then erased */
+#define NVS_KEY_MQTT_DEVICE_ID "device_id"
+#define NVS_KEY_MQTT_USER    "user"
+#define NVS_KEY_MQTT_PASS    "pass"
+
+/* device_id charset/length: 2-32 chars, [a-z0-9_-], must start with a letter.
+ * Keep in sync with Tesserae's device.json validation. */
+#define DEVICE_ID_MIN_LEN   2
+#define DEVICE_ID_MAX_LEN   32
 
 #define NVS_NS_STATE       "state"
 #define NVS_KEY_LAST_HASH  "last_hash"   /* sha256 of last rendered URL */

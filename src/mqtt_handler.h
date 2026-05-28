@@ -26,7 +26,7 @@ typedef struct {
  * message, or another esp_err_t on transport failure.
  *
  * If `heartbeat_json` is non-NULL and non-empty, that string is published
- * retained to MQTT_DEFAULT_STATUS_TOPIC right after we connect, before
+ * retained to tesserae/<device_id>/status right after we connect, before
  * waiting for the update message -- so a dying device still reports its
  * state even if the render path later fails. */
 esp_err_t mqtt_fetch_retained(mqtt_job_t *job, const char *heartbeat_json);

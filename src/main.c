@@ -18,6 +18,7 @@
 #include <string.h>
 
 #include "driver/usb_serial_jtag.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
@@ -36,6 +37,44 @@
 #include "wifi_manager.h"
 
 static const char *TAG = "main";
+
+/* ---------- double-tap-reset -> settings mode ---------- */
+
+/* The tap counter lives in RTC slow memory so it survives the RESET button
+ * (and deep sleep). A magic word tells "retained" apart from power-on garbage.
+ *
+ * NOTE: whether the RESET button preserves RTC memory is board-specific. If a
+ * given board fully power-cycles the RTC domain on reset, the counter never
+ * reaches 2 and double-tap simply never fires -- a harmless no-op. In that
+ * case use the captive portal (no creds) or `idf.py erase-flash` instead. */
+#define RTC_TAP_MAGIC  0x54455353u   /* 'TESS' */
+RTC_NOINIT_ATTR static uint32_t s_rtc_magic;
+RTC_NOINIT_ATTR static uint32_t s_reset_taps;
+
+/* Increment on each manual reset; two within one wake window => settings mode.
+ * The window is closed by zeroing the counter when we commit to deep sleep
+ * (see sleep_forever_or_until_timer), so single taps minutes apart don't add
+ * up to a false double-tap. */
+static bool detect_settings_mode(esp_reset_reason_t reason)
+{
+    if (s_rtc_magic != RTC_TAP_MAGIC) {   /* power-on / garbage: seed it */
+        s_rtc_magic = RTC_TAP_MAGIC;
+        s_reset_taps = 0;
+    }
+
+    bool manual = (reason == ESP_RST_POWERON || reason == ESP_RST_EXT);
+    if (manual) {
+        s_reset_taps++;
+    } else {
+        s_reset_taps = 0;   /* timer wake / software restart isn't a tap */
+    }
+
+    if (s_reset_taps >= 2) {
+        s_reset_taps = 0;
+        return true;
+    }
+    return false;
+}
 
 /* ---------- "should I bother re-rendering?" ---------- */
 
@@ -99,6 +138,10 @@ static void sleep_forever_or_until_timer(void)
      * USB host (laptop / SOF-emitting host) auto-selects it -- a bare
      * USB charger / power bank doesn't emit SOFs and is treated as
      * battery operation. */
+    /* Close the double-tap window: once we're committing to sleep/loop, a
+     * later single reset should start counting from zero again. */
+    s_reset_taps = 0;
+
     bool loop = false;
     const char *reason = NULL;
 
@@ -166,12 +209,17 @@ static void maybe_show_splash(esp_reset_reason_t reset_reason)
 void app_main(void)
 {
     esp_reset_reason_t reset_reason = esp_reset_reason();
-    ESP_LOGI(TAG, "boot; reset_reason=%d wakeup_cause=%d",
-             reset_reason, esp_sleep_get_wakeup_cause());
+    bool settings_mode = detect_settings_mode(reset_reason);
+    ESP_LOGI(TAG, "boot; reset_reason=%d wakeup_cause=%d settings_mode=%d",
+             reset_reason, esp_sleep_get_wakeup_cause(), settings_mode);
 
     ESP_ERROR_CHECK(wifi_manager_init());
 
-    maybe_show_splash(reset_reason);
+    /* Skip the 30 s splash when entering settings mode -- the user is waiting
+     * on the editor, not a panel sanity check. */
+    if (!settings_mode) {
+        maybe_show_splash(reset_reason);
+    }
 
     if (!wifi_creds_present()) {
         run_provisioning_then_reboot();
@@ -186,7 +234,22 @@ void app_main(void)
         return;
     }
 
-    char heartbeat[160];
+    /* Double-tap reset: serve the always-on settings editor on the LAN instead
+     * of running the paint cycle. Stays up until a save (then reboot) or the
+     * portal timeout (then sleep). */
+    if (settings_mode) {
+        ESP_LOGI(TAG, "settings mode: serving LAN editor + mDNS");
+        if (settings_server_run_blocking() == ESP_OK) {
+            ESP_LOGI(TAG, "settings saved; rebooting to apply");
+            esp_restart();
+        }
+        ESP_LOGI(TAG, "settings editor timed out; back to sleep");
+        wifi_sta_stop();
+        sleep_forever_or_until_timer();
+        return;
+    }
+
+    char heartbeat[256];
     heartbeat_format_json(heartbeat, sizeof(heartbeat));
 
     mqtt_job_t job;

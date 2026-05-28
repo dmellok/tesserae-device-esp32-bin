@@ -1,6 +1,7 @@
 #include "wifi_manager.h"
 #include "app_config.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "esp_event.h"
@@ -83,6 +84,39 @@ bool wifi_creds_present(void)
     return WIFI_DEFAULT_SSID[0] != '\0';
 }
 
+bool wifi_creds_get_ssid(char *out, size_t out_sz)
+{
+    if (!out || out_sz == 0) return false;
+    out[0] = '\0';
+
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS_WIFI, NVS_READONLY, &h) == ESP_OK) {
+        size_t len = out_sz;
+        esp_err_t err = nvs_get_str(h, NVS_KEY_SSID, out, &len);
+        nvs_close(h);
+        if (err == ESP_OK && out[0]) return true;
+    }
+    if (WIFI_DEFAULT_SSID[0] != '\0') {
+        strncpy(out, WIFI_DEFAULT_SSID, out_sz - 1);
+        out[out_sz - 1] = '\0';
+        return true;
+    }
+    return false;
+}
+
+bool wifi_manager_get_sta_ip(char *out, size_t out_sz)
+{
+    if (!out || out_sz == 0) return false;
+    out[0] = '\0';
+
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (!netif) return false;
+    esp_netif_ip_info_t ip;
+    if (esp_netif_get_ip_info(netif, &ip) != ESP_OK || ip.ip.addr == 0) return false;
+    snprintf(out, out_sz, IPSTR, IP2STR(&ip.ip));
+    return true;
+}
+
 esp_err_t wifi_creds_save(const char *ssid, const char *pass)
 {
     if (!ssid || !*ssid) return ESP_ERR_INVALID_ARG;
@@ -92,7 +126,19 @@ esp_err_t wifi_creds_save(const char *ssid, const char *pass)
     if (err != ESP_OK) return err;
 
     err = nvs_set_str(h, NVS_KEY_SSID, ssid);
-    if (err == ESP_OK) err = nvs_set_str(h, NVS_KEY_PASS, pass ? pass : "");
+    if (err == ESP_OK) {
+        if (pass) {
+            err = nvs_set_str(h, NVS_KEY_PASS, pass);
+        } else {
+            /* pass == NULL: keep the stored password (the always-on portal
+             * sends a blank field to mean "leave unchanged"). If none is
+             * stored yet, write empty so the key always exists. */
+            size_t l = 0;
+            if (nvs_get_str(h, NVS_KEY_PASS, NULL, &l) == ESP_ERR_NVS_NOT_FOUND) {
+                err = nvs_set_str(h, NVS_KEY_PASS, "");
+            }
+        }
+    }
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     return err;

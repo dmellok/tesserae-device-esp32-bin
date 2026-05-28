@@ -25,12 +25,10 @@
 // #define MQTT_DEFAULT_USER         "broker-user"     /* leave undefined if open */
 // #define MQTT_DEFAULT_PASS         "broker-pass"
 //
-// Topic namespace. Defaults are tesserae/esp32/{frame/bin,config,status} --
-// override only if you're avoiding a collision with another tenant on a
-// shared broker, or running multiple Tesserae devices off one server.
-// #define MQTT_DEFAULT_TOPIC        "tesserae/esp32/frame/bin" /* frame URLs we listen for */
-// #define MQTT_DEFAULT_CONFIG_TOPIC "tesserae/esp32/config"    /* runtime settings we listen for */
-// #define MQTT_DEFAULT_STATUS_TOPIC "tesserae/esp32/status"    /* heartbeats we publish */
+// device_id is the topic-namespace prefix: tesserae/<device_id>/{frame/bin,
+// config,status}. Defaults to "esp32" (matches Tesserae's built-in
+// esp32_client kind). Set a distinct id per physical panel on a shared broker.
+// #define MQTT_DEFAULT_DEVICE_ID    "esp32"
 //
 // #define MQTT_CLIENT_ID            "tesserae-esp32-bin-1"     /* unique per device on the broker */
 

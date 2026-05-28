@@ -25,6 +25,19 @@ typedef struct {
     const char *heartbeat_json;     /* may be NULL or empty */
 } ctx_t;
 
+/* Per-device topics, derived from mqtt_config_t.device_id once per session.
+ * Static so the pointers handed to esp-mqtt outlive the call. */
+static char s_update_topic[96];
+static char s_config_topic[96];
+static char s_status_topic[96];
+
+static void build_topics(const char *device_id)
+{
+    snprintf(s_update_topic, sizeof s_update_topic, "tesserae/%s/frame/bin", device_id);
+    snprintf(s_config_topic, sizeof s_config_topic, "tesserae/%s/config",    device_id);
+    snprintf(s_status_topic, sizeof s_status_topic, "tesserae/%s/status",    device_id);
+}
+
 /* ---------- payload parsers ---------- */
 
 /* Cheap-and-good JSON URL extractor. Looks for "url" : "<value>" with
@@ -186,13 +199,14 @@ esp_err_t mqtt_fetch_retained(mqtt_job_t *job, const char *heartbeat_json)
 
     mqtt_config_t cfg_nvs;
     mqtt_config_load(&cfg_nvs);
+    build_topics(cfg_nvs.device_id);
 
     ctx_t ctx = {
         .events = xEventGroupCreate(),
         .out = job,
-        .update_topic = cfg_nvs.topic,
-        .config_topic = MQTT_DEFAULT_CONFIG_TOPIC,
-        .status_topic = MQTT_DEFAULT_STATUS_TOPIC,
+        .update_topic = s_update_topic,
+        .config_topic = s_config_topic,
+        .status_topic = s_status_topic,
         .heartbeat_json = heartbeat_json,
     };
 
@@ -208,7 +222,7 @@ esp_err_t mqtt_fetch_retained(mqtt_job_t *job, const char *heartbeat_json)
         .credentials.client_id = MQTT_CLIENT_ID,
         .session.keepalive = 30,
         .session.last_will = {
-            .topic   = MQTT_DEFAULT_STATUS_TOPIC,
+            .topic   = s_status_topic,
             .msg     = k_lwt_payload,
             .msg_len = sizeof(k_lwt_payload) - 1,
             .qos     = 1,
