@@ -6,7 +6,7 @@ The device wakes on a timer, publishes a heartbeat with its battery state, pulls
 
 Tesserae's `esp32_bin` renderer composes a frame, packs it into the panel-native 4 bpp `.bin` format, and publishes the URL **retained** on `tesserae/<device_id>/frame/bin` so a battery client can connect briefly, immediately receive the most recent frame URL (no waiting), and sleep again.
 
-**Multiple panels:** each device has a `device_id` (default `esp32`) that prefixes its MQTT topics, so several ESP32 panels can share one broker and one Tesserae server. Set it from the setup portal — see [Provisioning & settings](#provisioning--settings).
+**Multiple panels:** each device has a `device_id` (default `esp32`) that prefixes its MQTT topics, so several ESP32 panels can share one broker and one Tesserae server. Set it from the setup portal or bake it in at compile time with `MQTT_DEFAULT_DEVICE_ID` in `secrets.h` — see [Provisioning & settings](#provisioning--settings).
 
 ## Why retained MQTT + URL hash + WiFi-before-paint
 
