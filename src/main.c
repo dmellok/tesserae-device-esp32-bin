@@ -133,14 +133,20 @@ static int load_sleep_interval_s(void)
 
 static void sleep_forever_or_until_timer(void)
 {
-    /* Decide between deep sleep (battery) and short-delay restart loop
-     * (dev). Either DEV_DISABLE_SLEEP forces the loop, OR a connected
-     * USB host (laptop / SOF-emitting host) auto-selects it -- a bare
-     * USB charger / power bank doesn't emit SOFs and is treated as
-     * battery operation. */
+    /* Decide between deep sleep (battery) and short-delay restart loop (dev):
+     *   DEV_DISABLE_SLEEP defined -> always loop (dev override)
+     *   DEV_FORCE_SLEEP   defined -> always deep-sleep, even on USB host
+     *                                (exercise battery path while plugged in)
+     *   otherwise -> auto-detect: USB host (laptop / SOF-emitter) loops, a
+     *                bare USB charger / power bank does not emit SOFs and is
+     *                treated as battery. */
     /* Close the double-tap window: once we're committing to sleep/loop, a
      * later single reset should start counting from zero again. */
     s_reset_taps = 0;
+
+#if defined(DEV_DISABLE_SLEEP) && defined(DEV_FORCE_SLEEP)
+#  error "DEV_DISABLE_SLEEP and DEV_FORCE_SLEEP are mutually exclusive"
+#endif
 
     bool loop = false;
     const char *reason = NULL;
@@ -148,6 +154,8 @@ static void sleep_forever_or_until_timer(void)
 #ifdef DEV_DISABLE_SLEEP
     loop = true;
     reason = "DEV_DISABLE_SLEEP";
+#elif defined(DEV_FORCE_SLEEP)
+    /* Skip the USB-host check entirely; behave as if on battery. */
 #else
     if (usb_serial_jtag_is_connected()) {
         loop = true;

@@ -40,3 +40,11 @@
  * doesn't emit SOF packets so auto-detection treats it as battery). */
 // #define DEV_DISABLE_SLEEP
 // #define DEV_LOOP_INTERVAL_S 10                /* defaults to 10 */
+
+/* Opposite of DEV_DISABLE_SLEEP: skip the USB-host auto-detect and ALWAYS
+ * deep-sleep, even when plugged into a laptop. Useful for exercising the
+ * battery wake path (proper esp_deep_sleep with the configured interval +
+ * wake_reason "timer") while keeping serial / flash access. The CH343 UART
+ * port stays enumerated across sleeps; esptool's RTS reset still wakes the
+ * chip for re-flashing. Mutually exclusive with DEV_DISABLE_SLEEP. */
+// #define DEV_FORCE_SLEEP
