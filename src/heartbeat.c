@@ -89,7 +89,31 @@ static int current_rssi(void)
     return ap.rssi;
 }
 
-void heartbeat_format_json(char *dst, size_t dst_sz)
+/* Short-string mapping of the reset reason so the server can distinguish
+ * a normal timer wake ("timer") from a brownout, panic, watchdog, or repeated
+ * power-on -- the latter three signal real trouble on battery. */
+static const char *wake_reason_str(esp_reset_reason_t r)
+{
+    switch (r) {
+        case ESP_RST_POWERON:   return "poweron";
+        case ESP_RST_EXT:       return "ext";
+        case ESP_RST_SW:        return "sw";
+        case ESP_RST_PANIC:     return "panic";
+        case ESP_RST_INT_WDT:   return "int_wdt";
+        case ESP_RST_TASK_WDT:  return "task_wdt";
+        case ESP_RST_WDT:       return "wdt";
+        case ESP_RST_DEEPSLEEP: return "timer";
+        case ESP_RST_BROWNOUT:  return "brownout";
+        case ESP_RST_SDIO:      return "sdio";
+        case ESP_RST_USB:       return "usb";
+        case ESP_RST_JTAG:      return "jtag";
+        default:                return "unknown";
+    }
+}
+
+void heartbeat_format_json(char *dst, size_t dst_sz,
+                           int sleep_interval_s,
+                           esp_reset_reason_t reset_reason)
 {
     if (!dst || dst_sz == 0) return;
 
@@ -98,16 +122,22 @@ void heartbeat_format_json(char *dst, size_t dst_sz)
     int rssi = current_rssi();
     char ip[16] = {0};
     wifi_manager_get_sta_ip(ip, sizeof(ip));
+    const char *wake = wake_reason_str(reset_reason);
 
-    ESP_LOGI(TAG, "battery=%d mV (%d%%), rssi=%d dBm, ip=%s, fw=%s",
-             mv, pct, rssi, ip, FW_VERSION);
+    ESP_LOGI(TAG, "battery=%d mV (%d%%), rssi=%d dBm, ip=%s, fw=%s, "
+                  "sleep=%ds, wake=%s",
+             mv, pct, rssi, ip, FW_VERSION, sleep_interval_s, wake);
 
     /* kind/panel_w/panel_h let Tesserae pre-fill the Register form for a
-     * discovered device. They're static for the device's lifetime but cheap
-     * to re-send each heartbeat. */
+     * discovered device. sleep_interval_s + wake_reason let it (a) reason
+     * about expected vs actual heartbeat cadence rather than treating every
+     * sleep as a fault, and (b) spot brownouts / panics / wdt-resets that
+     * only manifest on battery. */
     snprintf(dst, dst_sz,
              "{\"battery_mv\":%d,\"battery_pct\":%d,\"rssi\":%d,"
              "\"ip\":\"%s\",\"fw_version\":\"%s\","
-             "\"kind\":\"esp32_client\",\"panel_w\":%d,\"panel_h\":%d}",
-             mv, pct, rssi, ip, FW_VERSION, EPD_WIDTH, EPD_HEIGHT);
+             "\"kind\":\"esp32_client\",\"panel_w\":%d,\"panel_h\":%d,"
+             "\"sleep_interval_s\":%d,\"wake_reason\":\"%s\"}",
+             mv, pct, rssi, ip, FW_VERSION, EPD_WIDTH, EPD_HEIGHT,
+             sleep_interval_s, wake);
 }

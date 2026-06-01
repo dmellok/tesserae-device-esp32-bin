@@ -250,7 +250,8 @@ void app_main(void)
     }
 
     char heartbeat[256];
-    heartbeat_format_json(heartbeat, sizeof(heartbeat));
+    heartbeat_format_json(heartbeat, sizeof(heartbeat),
+                          load_sleep_interval_s(), reset_reason);
 
     mqtt_job_t job;
     err = mqtt_fetch_retained(&job, heartbeat);

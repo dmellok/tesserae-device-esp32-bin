@@ -176,10 +176,12 @@ Published once per wake, immediately after the broker connection succeeds and **
   "battery_pct": 67,
   "rssi": -42,
   "ip": "192.168.50.234",
-  "fw_version": "0.3.0",
+  "fw_version": "0.4.0",
   "kind": "esp32_client",
   "panel_w": 1200,
-  "panel_h": 1600
+  "panel_h": 1600,
+  "sleep_interval_s": 900,
+  "wake_reason": "timer"
 }
 ```
 
@@ -190,8 +192,10 @@ Published once per wake, immediately after the broker connection succeeds and **
 - `fw_version` — firmware version string (set via `build_flags` in `platformio.ini`).
 - `kind` — always `"esp32_client"`; lets Tesserae pre-fill the kind when registering a discovered device.
 - `panel_w` / `panel_h` — panel pixel dimensions (`EPD_WIDTH` / `EPD_HEIGHT`), so the Register form pre-fills the panel size.
+- `sleep_interval_s` — the deep-sleep duration the device intends to use after this wake (15 min default, or the value pushed via the `config` topic). Lets the server reason about "expected next heartbeat in N seconds" instead of treating each sleep as a fault.
+- `wake_reason` — short string from `esp_reset_reason()`: `timer` (normal deep-sleep wake), `poweron`, `ext`, `sw`, `brownout`, `panic`, `int_wdt` / `task_wdt` / `wdt`, etc. On battery anything other than `timer` (or the first `poweron`) is a diagnostic flag — `brownout` repeated = low cell voltage under load, `panic`/`wdt` = firmware crash.
 
-Retained, so Tesserae can show "last known state" without the device being awake. A heartbeat significantly older than ~3× the configured sleep interval is a probably-dead-battery signal — Tesserae surfaces these in its UI. The `kind`/`panel_*` keys feed Tesserae's **Discovered devices** strip: an unregistered `device_id` heartbeating on `tesserae/+/status` shows up with a one-click Register button, pre-populated from these fields.
+Retained, so Tesserae can show "last known state" without the device being awake. The `kind`/`panel_*` keys feed Tesserae's **Discovered devices** strip: an unregistered `device_id` heartbeating on `tesserae/+/status` shows up with a one-click Register button, pre-populated from these fields. The Last Will (`{"state":"offline"}`, **non-retained**) lets live subscribers see ungraceful disconnects without ever overwriting the retained heartbeat — combine with `sleep_interval_s` and the heartbeat timestamp to distinguish "asleep on schedule" from "actually dead".
 
 ### Manual test push
 
