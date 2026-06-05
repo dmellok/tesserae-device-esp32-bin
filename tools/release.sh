@@ -54,9 +54,46 @@ fi
 PIO="${PIO:-$HOME/.platformio/penv/bin/pio}"
 ENV="${ENV:-tesserae-esp32-bin-client}"
 
+# --- secrets.h isolation ----------------------------------------------------
+# secrets.h is #include'd by app_config.h, so any compile-time defines in it
+# get baked into the firmware as string literals (in .rodata) and would ship
+# in the release artifacts. Move it aside for the build and restore on exit.
+# A trap covers crashes, ^C, and any non-zero exit.
+SECRETS="include/secrets.h"
+SECRETS_BAK="include/.secrets.h.release-backup.$$"
+if [[ -f "$SECRETS" ]]; then
+    echo "==> moving ${SECRETS} aside for the build"
+    mv "$SECRETS" "$SECRETS_BAK"
+    trap 'mv "$SECRETS_BAK" "$SECRETS" 2>/dev/null || true' EXIT
+fi
+
 # --- build ------------------------------------------------------------------
 echo "==> building ${ENV} for FW_VERSION=${VERSION}"
 "$PIO" run -e "$ENV" >/dev/null
+
+# --- secrets-leak scan ------------------------------------------------------
+# Defense in depth: even if the move-aside above somehow failed, this catches
+# any string literal from the (now-stashed) secrets.h that ended up baked
+# into firmware.bin. Anything 4+ chars long is checked; shorter strings risk
+# false-positive matches in unrelated code.
+if [[ -f "$SECRETS_BAK" ]]; then
+    echo "==> scanning firmware.bin for any string literal from secrets.h"
+    LEAKED=0
+    # grep -oE '"[^"]*"' pulls quoted literals out of the C source; sort -u
+    # de-dupes. Then peel off the quotes with tr and length-filter.
+    while IFS= read -r needle; do
+        [[ ${#needle} -ge 4 ]] || continue
+        if strings ".pio/build/${ENV}/firmware.bin" | grep -qF -- "$needle"; then
+            echo "  LEAK: '$needle' from ${SECRETS} appears in firmware.bin" >&2
+            LEAKED=1
+        fi
+    done < <(grep -oE '"[^"]+"' "$SECRETS_BAK" | tr -d '"' | sort -u)
+    if (( LEAKED )); then
+        echo "error: aborting release; secrets leaked into firmware.bin" >&2
+        exit 1
+    fi
+    echo "  clean: no secrets.h literals found in firmware.bin"
+fi
 
 BUILD_DIR=".pio/build/${ENV}"
 for f in bootloader.bin partitions.bin firmware.bin firmware.factory.bin; do
