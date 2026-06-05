@@ -93,6 +93,53 @@ To skip the captive portal during iteration, copy [include/secrets.example.h](in
 
 For fast iteration without USB plugged in (e.g. headless testing), also define `DEV_DISABLE_SLEEP` in `secrets.h` — the firmware will loop on `DEV_LOOP_INTERVAL_S` (default 10 s) instead of deep-sleeping. With USB plugged in this is automatic; the manual flag is only needed otherwise.
 
+## Flashing a pre-built release
+
+Each release tag on GitHub ships four artifacts plus a checksum file:
+
+```
+bootloader.bin         second-stage bootloader (esp-idf)
+partitions.bin         partition table (matches partitions.csv)
+firmware.bin           the application image
+firmware.factory.bin   combined image (bootloader + partitions + firmware at offset 0)
+SHA256SUMS             SHA-256 of each .bin above
+```
+
+Verify the downloads before flashing:
+
+```bash
+shasum -a 256 -c SHA256SUMS
+```
+
+The simplest flash uses the combined image written to offset 0:
+
+```bash
+esptool.py --chip esp32s3 --port /dev/cu.usbmodem... \
+    write_flash 0x0 firmware.factory.bin
+```
+
+Or flash the three pieces individually at their native offsets (matches what PlatformIO does during `pio run -t upload`):
+
+```bash
+esptool.py --chip esp32s3 --port /dev/cu.usbmodem... \
+    write_flash 0x0     bootloader.bin \
+                0x8000  partitions.bin \
+                0x10000 firmware.bin
+```
+
+**Finding the port.** The Waveshare board exposes two USB devices when plugged into a laptop: the ESP32-S3 native USB-JTAG/Serial (`303A:1001`) and an onboard CH343 UART (`1A86:55D3`). Flash through the CH343 — that port drives DTR/RTS for the auto-reset circuit. On macOS it shows up as `/dev/cu.usbmodem<serial>`; on Linux as `/dev/ttyACM<n>` or `/dev/ttyUSB<n>`. `pio device list` lists candidates with VID/PID.
+
+**First boot after flashing.** The cold-boot path paints the portal splash (~30 s) and brings up the `Tesserae-Setup` SoftAP (password `tesserae`). Scan the QR on the splash with a phone to join, then fill in your WiFi + MQTT broker in the captive portal.
+
+**Erase NVS first** if you want a clean state on a previously-provisioned board (otherwise stored WiFi creds + MQTT URI + `device_id` survive):
+
+```bash
+esptool.py --chip esp32s3 --port /dev/cu.usbmodem... erase_flash
+# then write_flash as above
+```
+
+The release-build pipeline lives at [`tools/release.sh`](tools/release.sh) — it rebuilds the current `FW_VERSION` from a clean tree, stages artifacts under `release/<version>/`, computes SHA-256, tags `vX.Y.Z`, and creates a GitHub Release with the artifacts attached.
+
 ## Boot splashes
 
 Two panel-native splashes are baked into the firmware image (built from PNG via [`tools/gen_splash.py`](tools/gen_splash.py), Floyd-Steinberg dithered to the 6-colour panel palette, and embedded as 960,000-byte blobs via CMake's `EMBED_FILES`):

@@ -15,14 +15,33 @@ Usage:
                   [--logo-size 600] [--logo-y CENTERED]
 """
 import argparse
+import os
 import sys
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 
 try:
     import qrcode  # only required when --qr-data is used
 except ImportError:
     qrcode = None
+
+# Order matters: tried in turn until one loads. Helvetica.ttc ships with macOS
+# and renders cleanly at the sizes we use; SFNS is the system UI font.
+_FONT_CANDIDATES = [
+    "/System/Library/Fonts/Helvetica.ttc",
+    "/System/Library/Fonts/HelveticaNeue.ttc",
+    "/System/Library/Fonts/SFNSDisplay.ttf",
+    "/Library/Fonts/Arial.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+]
+
+
+def load_font(size: int) -> ImageFont.FreeTypeFont:
+    for path in _FONT_CANDIDATES:
+        if os.path.exists(path):
+            return ImageFont.truetype(path, size=size)
+    # Last-resort bitmap font; small but readable.
+    return ImageFont.load_default()
 
 PANEL_W, PANEL_H = 1200, 1600
 
@@ -53,8 +72,25 @@ def make_canvas(logo_path: str, logo_size: int, logo_y: int) -> Image.Image:
     return canvas
 
 
+def overlay_labels(canvas: Image.Image, labels, y_top: int,
+                   font_px: int = 44, line_gap_px: int = 18,
+                   colour=(0, 0, 0)) -> int:
+    """Centered black text lines stacked vertically. Returns y of the bottom
+    of the last line so callers can stack further content under them."""
+    font = load_font(font_px)
+    draw = ImageDraw.Draw(canvas)
+    y = y_top
+    for line in labels:
+        bbox = draw.textbbox((0, 0), line, font=font)
+        text_w = bbox[2] - bbox[0]
+        x = (PANEL_W - text_w) // 2
+        draw.text((x, y), line, fill=colour, font=font)
+        y += (bbox[3] - bbox[1]) + line_gap_px
+    return y
+
+
 def overlay_qr(canvas: Image.Image, data: str, target_px: int, y_top: int,
-               quiet_zone: int = 4) -> None:
+               quiet_zone: int = 4) -> int:
     """Render a QR code for `data` into a `target_px`-square area centered
     horizontally at `y_top` on the canvas, scaled with nearest-neighbor so
     every module aligns to an integer pixel grid (clean dither output)."""
@@ -93,6 +129,7 @@ def overlay_qr(canvas: Image.Image, data: str, target_px: int, y_top: int,
     print(f"  qr: {m_size}x{m_size} modules ({m_size - 2 * quiet_zone} data + "
           f"{quiet_zone}-module border), {module_px}px/module, "
           f"final {bmp_px}x{bmp_px} at ({x},{y_top})")
+    return y_top + bmp_px
 
 
 def dither_to_nibbles(rgb: np.ndarray) -> np.ndarray:
@@ -145,6 +182,13 @@ def main():
                    help="QR code target edge in panel pixels (default 700)")
     p.add_argument("--qr-y",      type=int, default=850,
                    help="QR top Y in panel pixels (default 850)")
+    p.add_argument("--label",     action="append", default=[],
+                   help="text line to render centered below the QR "
+                        "(may be repeated to stack lines)")
+    p.add_argument("--label-y",   type=int, default=-1,
+                   help="top Y for the first label (default: 40px under QR)")
+    p.add_argument("--label-px",  type=int, default=44,
+                   help="label font size in panel pixels (default 44)")
     args = p.parse_args()
 
     if args.logo_size > PANEL_W:
@@ -159,9 +203,15 @@ def main():
           f"size {args.logo_size}x{args.logo_size} on {PANEL_W}x{PANEL_H} white...")
     canvas = make_canvas(args.logo, args.logo_size, args.logo_y)
 
+    qr_bottom = args.qr_y
     if args.qr_data:
         print(f"baking QR for {args.qr_data!r}...")
-        overlay_qr(canvas, args.qr_data, args.qr_size, args.qr_y)
+        qr_bottom = overlay_qr(canvas, args.qr_data, args.qr_size, args.qr_y)
+
+    if args.label:
+        label_y = args.label_y if args.label_y >= 0 else qr_bottom + 40
+        print(f"baking {len(args.label)} label line(s) at y={label_y}...")
+        overlay_labels(canvas, args.label, label_y, font_px=args.label_px)
 
     print("Floyd-Steinberg dithering to the 6-colour palette...")
     nibbles = dither_to_nibbles(np.array(canvas, dtype=np.float32))
