@@ -20,7 +20,10 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-VERSION=$(awk -F'"' '/-DFW_VERSION/ {print $2; exit}' platformio.ini)
+# The macro is written as -DFW_VERSION=\"X.Y.Z\" in platformio.ini so the
+# escaped quotes survive PlatformIO's shell-parsing. Strip backslashes from
+# the captured field before using it as a tag name.
+VERSION=$(awk -F'"' '/-DFW_VERSION/ {gsub(/\\/, "", $2); print $2; exit}' platformio.ini)
 if [[ -z "${VERSION:-}" ]]; then
     echo "error: couldn't parse FW_VERSION from platformio.ini" >&2
     exit 1
