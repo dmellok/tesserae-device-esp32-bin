@@ -56,9 +56,9 @@ For "months of usage" with a typical update cadence, a 5000–10000 mAh single-c
 ```
 boot
   ├─ double-tap RESET?               → serve LAN settings editor + mDNS → sleep/reboot
-  ├─ cold boot (RESET / power-on)?   → paint 6-band colour splash (panel sanity check)
-  ├─ no WiFi creds anywhere?         → captive portal → reboot
-  ├─ STA connect fails?              → captive portal → reboot
+  ├─ cold boot + WiFi creds present? → paint logo splash (~30 s)
+  ├─ no WiFi creds anywhere?         → paint portal splash (logo + WPA QR) → captive portal → reboot
+  ├─ STA connect fails?              → paint portal splash → captive portal → reboot
   ├─ publish heartbeat               (battery_mv/pct, rssi, ip, fw_version, kind, panel_w/h)
   ├─ no retained MQTT message?       → sleep (nothing new to show)
   ├─ URL unchanged since last wake?  → sleep (skip ~30 s refresh, save ~0.6 mAh)
@@ -92,6 +92,27 @@ First boot brings up a SoftAP named `Tesserae-Setup` (password `tesserae`). Join
 To skip the captive portal during iteration, copy [include/secrets.example.h](include/secrets.example.h) to `include/secrets.h` and uncomment the `WIFI_DEFAULT_*` / `MQTT_DEFAULT_*` macros you want baked into the build. `secrets.h` is git-ignored. Precedence on each wake is NVS (set via portal) → `secrets.h` values → empty (portal triggers).
 
 For fast iteration without USB plugged in (e.g. headless testing), also define `DEV_DISABLE_SLEEP` in `secrets.h` — the firmware will loop on `DEV_LOOP_INTERVAL_S` (default 10 s) instead of deep-sleeping. With USB plugged in this is automatic; the manual flag is only needed otherwise.
+
+## Boot splashes
+
+Two panel-native splashes are baked into the firmware image (built from PNG via [`tools/gen_splash.py`](tools/gen_splash.py), Floyd-Steinberg dithered to the 6-colour panel palette, and embedded as 960,000-byte blobs via CMake's `EMBED_FILES`):
+
+- **Logo splash** ([`assets/splash_logo.bin`](assets/splash_logo.bin)) — Tesserae logo centered on white. Painted on cold-boot (`ESP_RST_POWERON` / `ESP_RST_EXT`) when WiFi creds are present. Skipped on timer-wake (every normal sleep cycle would burn 30 s of refresh power for nothing) and in settings mode.
+- **Portal splash** ([`assets/splash_portal.bin`](assets/splash_portal.bin)) — logo at top, a baked WPA-format QR code below: `WIFI:T:WPA;S:Tesserae-Setup;P:tesserae;;`. Scan with a phone to join the SoftAP without typing. Painted whenever the firmware is about to bring up the captive portal (no creds, or STA connect failed) — first-boot users see it on the panel and can join the AP without ever opening secrets.
+
+To regenerate after editing the logo or changing `PROVISION_AP_SSID` / `PROVISION_AP_PASS` in `include/app_config.h`:
+
+```bash
+LOGO=/path/to/tesserae-splash-1024.png
+python3 tools/gen_splash.py --logo "$LOGO" --out assets/splash_logo.bin \
+    --logo-size 600
+python3 tools/gen_splash.py --logo "$LOGO" --out assets/splash_portal.bin \
+    --logo-size 600 --logo-y 100 \
+    --qr-data 'WIFI:T:WPA;S:Tesserae-Setup;P:tesserae;;' \
+    --qr-size 700 --qr-y 850
+```
+
+Both files are committed; the build embeds them and they make up ~2 MB of the flashed firmware image. The dither is pure Python (no native deps beyond Pillow + numpy + qrcode); each splash takes ~15 s on a laptop.
 
 ## Provisioning & settings
 

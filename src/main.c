@@ -34,6 +34,7 @@
 #include "image_fetcher.h"
 #include "mqtt_handler.h"
 #include "provisioning.h"
+#include "splash.h"
 #include "wifi_manager.h"
 
 static const char *TAG = "main";
@@ -184,7 +185,11 @@ static void sleep_forever_or_until_timer(void)
 
 static void run_provisioning_then_reboot(void)
 {
-    ESP_LOGW(TAG, "no usable wifi creds; starting captive portal");
+    ESP_LOGW(TAG, "no usable wifi creds; painting portal splash + captive portal");
+    /* Paint logo + WPA QR before bringing up the AP so the user can scan
+     * to join Tesserae-Setup instead of typing the SSID. ~30 s panel refresh
+     * runs concurrently with the AP/HTTPD/DNS bringup that's about to happen. */
+    splash_show_portal();
     esp_err_t err = provisioning_run_blocking();
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "creds saved; rebooting to use them");
@@ -197,21 +202,22 @@ static void run_provisioning_then_reboot(void)
 
 /* Show the splash on a true cold boot -- power-on or RESET button. Skip
  * it on timer-wake (production sleep cycle) AND on software restart
- * (DEV_DISABLE_SLEEP loop iterations), so we don't burn 25-30 s of panel
- * refresh on every quick test cycle. */
-static void maybe_show_splash(esp_reset_reason_t reset_reason)
+ * (DEV_DISABLE_SLEEP / DEV_FORCE_SLEEP loop iterations), so we don't burn
+ * 25-30 s of panel refresh on every quick test cycle.
+ *
+ * If we'll be going straight to the captive portal anyway (no creds), skip
+ * the logo splash -- run_provisioning_then_reboot() paints the portal splash
+ * instead, avoiding a wasted second ~30 s refresh on the no-creds path. */
+static void maybe_show_splash(esp_reset_reason_t reset_reason, bool has_creds)
 {
     if (reset_reason != ESP_RST_POWERON && reset_reason != ESP_RST_EXT) {
         return;
     }
-    ESP_LOGI(TAG, "cold boot; showing splash");
-    if (epd_port_init() != ESP_OK) {
-        ESP_LOGW(TAG, "panel init failed; skipping splash");
+    if (!has_creds) {
         return;
     }
-    epd_init();
-    epd_show_color_bars();
-    epd_sleep();
+    ESP_LOGI(TAG, "cold boot; showing logo splash");
+    splash_show_logo();
 }
 
 void app_main(void)
@@ -225,11 +231,12 @@ void app_main(void)
 
     /* Skip the 30 s splash when entering settings mode -- the user is waiting
      * on the editor, not a panel sanity check. */
+    bool have_creds = wifi_creds_present();
     if (!settings_mode) {
-        maybe_show_splash(reset_reason);
+        maybe_show_splash(reset_reason, have_creds);
     }
 
-    if (!wifi_creds_present()) {
+    if (!have_creds) {
         run_provisioning_then_reboot();
         return;
     }

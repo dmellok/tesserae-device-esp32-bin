@@ -9,9 +9,13 @@ idf_component_register(
         "mqtt_handler.c"
         "image_fetcher.c"
         "image_decoder.c"
+        "splash.c"
     INCLUDE_DIRS
         "."
         "../include"
+    EMBED_FILES
+        "../assets/splash_logo.bin"
+        "../assets/splash_portal.bin"
     REQUIRES
         driver
         esp_adc
