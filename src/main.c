@@ -226,12 +226,15 @@ static void maybe_show_splash(esp_reset_reason_t reset_reason, bool has_creds)
 /* ---------- wall-clock time + heartbeat ---------- */
 
 /* Lazy NTP sync. The RTC slow clock keeps running through deep sleep, so the
- * system time set by SNTP persists across wakes -- only a true cold boot
- * (RTC reset) actually has to hit pool.ntp.org. Any time() value past
- * 2023-01-01 indicates the RTC has a sensible epoch. */
-static void ensure_time_synced(int wait_ms)
+ * system time set by SNTP normally persists across wakes -- timer wakes can
+ * skip the round-trip. But if a previous sync ever landed badly (router
+ * intercepting NTP, transient pool.ntp.org weirdness), that error would
+ * propagate forever, so cold boots (POWERON / EXT reset) always force a
+ * fresh sync regardless of what the RTC currently thinks. That gives the
+ * user a recovery path: power-cycle or RESET the device. */
+static void ensure_time_synced(int wait_ms, bool force_resync)
 {
-    if (time(NULL) > 1700000000LL) return;
+    if (!force_resync && time(NULL) > 1700000000LL) return;
 
     esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
     esp_err_t err = esp_netif_sntp_init(&cfg);
@@ -256,12 +259,43 @@ static void ensure_time_synced(int wait_ms)
  * have WiFi up; this function brings MQTT up one-shot, publishes retained
  * QoS 1, waits for the PUBACK, tears MQTT down. Failures are logged and
  * swallowed -- a missed heartbeat just means the server's next prediction
- * falls back to its tolerance-window math for one cycle. */
+ * falls back to its tolerance-window math for one cycle.
+ *
+ * Defensive checks before shipping sleep_until:
+ *   - sane-epoch window: now must look like a real wall-clock time, between
+ *     2023-11 and 2039-09. Rejects the ESP-IDF default 2016 epoch when NTP
+ *     has never synced, and rejects a misconfigured SNTP server returning a
+ *     wild future date.
+ *   - cross-check: (sleep_until - now) must equal sleep_s within +-5 s.
+ *     Tautological with the current `now + sleep_s` math but catches future
+ *     refactors that compute sleep_until any other way. Server-side
+ *     Tesserae v0.43.1+ has its own fallback if these disagree by >30 s,
+ *     but we'd rather not ship the wrong value in the first place. */
+#define EPOCH_REASONABLE_MIN 1700000000LL   /* 2023-11-14 */
+#define EPOCH_REASONABLE_MAX 2200000000LL   /* 2039-09-13 */
+
 static void publish_heartbeat(int sleep_s, esp_reset_reason_t reset_reason)
 {
     char hb[320];
     time_t now = time(NULL);
-    time_t sleep_until = (now > 1700000000LL) ? (now + sleep_s) : 0;
+    time_t sleep_until = 0;
+
+    if (now > EPOCH_REASONABLE_MIN && now < EPOCH_REASONABLE_MAX) {
+        sleep_until = now + sleep_s;
+
+        long delta = (long)(sleep_until - now);
+        if (delta < (long)sleep_s - 5 || delta > (long)sleep_s + 5) {
+            ESP_LOGW(TAG,
+                "sleep_until cross-check failed: delta=%ld, sleep_s=%d; omitting",
+                delta, sleep_s);
+            sleep_until = 0;
+        }
+    } else if (now != 0) {
+        ESP_LOGW(TAG,
+            "wall-clock looks bogus (epoch=%lld); omitting sleep_until",
+            (long long)now);
+    }
+
     heartbeat_format_json(hb, sizeof hb, sleep_s, reset_reason, sleep_until);
 
     esp_err_t err = mqtt_publish_status(hb);
@@ -316,11 +350,15 @@ void app_main(void)
 
     int sleep_s = load_sleep_interval_s();
 
-    /* NTP carries across deep sleep via the RTC; only a true cold boot
-     * actually hits pool.ntp.org. If sync fails, sleep_until is omitted
-     * from the heartbeat and the server's smart-sync scheduler falls back
-     * to its tolerance-window math. */
-    ensure_time_synced(3000);
+    /* Force a fresh NTP sync on any cold boot so a previously-bad sync
+     * (network-side issue, transient pool weirdness) is recoverable by
+     * power-cycling or hitting RESET. Timer wakes from deep sleep reuse
+     * the RTC's preserved time and skip the round-trip. If sync fails,
+     * sleep_until is omitted from the heartbeat and the server's
+     * smart-sync scheduler falls back to its tolerance-window math. */
+    bool cold_boot = (reset_reason == ESP_RST_POWERON ||
+                      reset_reason == ESP_RST_EXT);
+    ensure_time_synced(5000, cold_boot);
 
     /* Fetch the retained URL only -- the heartbeat publishes at the END
      * (after paint, if any) so its sleep_until reflects the actual sleep
