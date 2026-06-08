@@ -240,7 +240,7 @@ Clamped to `[30, 604800]` (30 s – 7 days). Out-of-range values are rejected wi
 
 ### Status (heartbeat) payload
 
-Published once per wake, immediately after the broker connection succeeds and **before** the URL fetch / panel paint:
+Published once per wake at the **end** of the wake cycle (after the panel paint on render wakes, after the URL fetch on hash-skip wakes) so `sleep_until` reflects the actual sleep about to start. The render-path WiFi reconnect for this publish costs ~0.07–0.11 mAh per render wake — the price of accurate smart-sync predictions:
 
 ```json
 {
