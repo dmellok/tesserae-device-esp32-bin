@@ -59,15 +59,19 @@ boot
   ├─ cold boot + WiFi creds present? → paint logo splash (~30 s)
   ├─ no WiFi creds anywhere?         → paint portal splash (logo + WPA QR) → captive portal → reboot
   ├─ STA connect fails?              → paint portal splash → captive portal → reboot
-  ├─ publish heartbeat               (battery_mv/pct, rssi, ip, fw_version, kind, panel_w/h)
-  ├─ no retained MQTT message?       → sleep (nothing new to show)
-  ├─ URL unchanged since last wake?  → sleep (skip ~30 s refresh, save ~0.6 mAh)
-  ├─ fetch URL → validate length → paint
-  ├─ free WiFi BEFORE panel refresh  (saves ~80 mA during the 30 s refresh)
+  ├─ STA connect
+  ├─ NTP sync (cold boot only; RTC carries time across deep sleep)
+  ├─ fetch retained frame URL        (no heartbeat yet)
+  ├─ no URL? / URL unchanged?        → publish heartbeat → sleep
+  ├─ render path: download → free WiFi → paint (~30 s)
+  ├─ reconnect WiFi briefly          (~3-5 s, for the post-paint heartbeat)
+  ├─ publish heartbeat               (sleep_until = now + sleep_s, smart-sync feed)
   └─ deep sleep OR loop:
        ├─ USB host attached?         → short-delay restart loop (dev mode)
        └─ otherwise                  → deep sleep for the configured interval
 ```
+
+The heartbeat lands at the END of each wake (post-paint on render wakes), so `sleep_until` reflects the actual sleep about to start — Tesserae's smart-sync scheduler uses it to JIT-render the next frame so the device sees a fresh artifact the moment it wakes.
 
 The "no sleep when USB-host attached" logic uses ESP-IDF's `usb_serial_jtag_is_connected()` to read host SOF packets — a USB charger / power bank (no SOFs) is treated as battery operation. Force-override either way with `DEV_DISABLE_SLEEP` in `secrets.h`.
 
@@ -244,12 +248,14 @@ Published once per wake, immediately after the broker connection succeeds and **
   "battery_pct": 67,
   "rssi": -42,
   "ip": "192.168.50.234",
-  "fw_version": "0.4.0",
+  "fw_version": "0.6.0",
   "kind": "esp32_client",
   "panel_w": 1200,
   "panel_h": 1600,
   "sleep_interval_s": 900,
-  "wake_reason": "timer"
+  "next_sleep_s": 900,
+  "wake_reason": "timer",
+  "sleep_until": 1759264800
 }
 ```
 
@@ -260,8 +266,12 @@ Published once per wake, immediately after the broker connection succeeds and **
 - `fw_version` — firmware version string (set via `build_flags` in `platformio.ini`).
 - `kind` — always `"esp32_client"`; lets Tesserae pre-fill the kind when registering a discovered device.
 - `panel_w` / `panel_h` — panel pixel dimensions (`EPD_WIDTH` / `EPD_HEIGHT`), so the Register form pre-fills the panel size.
-- `sleep_interval_s` — the deep-sleep duration the device intends to use after this wake (15 min default, or the value pushed via the `config` topic). Lets the server reason about "expected next heartbeat in N seconds" instead of treating each sleep as a fault.
+- `sleep_interval_s` — the device's *configured* deep-sleep duration. Diagnostic.
+- `next_sleep_s` — the deep-sleep duration the device is **about to enter** (this firmware always sleeps for the configured interval, so it mirrors `sleep_interval_s`; a future firmware that adjusts cadence on low battery could differ).
 - `wake_reason` — short string from `esp_reset_reason()`: `timer` (normal deep-sleep wake), `poweron`, `ext`, `sw`, `brownout`, `panic`, `int_wdt` / `task_wdt` / `wdt`, etc. On battery anything other than `timer` (or the first `poweron`) is a diagnostic flag — `brownout` repeated = low cell voltage under load, `panic`/`wdt` = firmware crash.
+- `sleep_until` — absolute unix timestamp (UTC seconds) the device intends to wake. **Omitted** when the firmware doesn't have wall-clock time yet (NTP failed on the first cold boot, broker / WiFi blocked outbound `pool.ntp.org`). The server falls back to `heartbeat_receive_time + next_sleep_s` when absent. Once synced, the RTC keeps time across deep sleep, so subsequent wakes carry it cheaply.
+
+Together `next_sleep_s` and `sleep_until` feed Tesserae's [smart-sync scheduler](https://github.com/dmellok/tesserae/issues/10) — after 3 on-time wakes the device flips to "trusted" and the server JIT-renders the next frame so it lands fresh right before the device wakes. To hit this contract the firmware publishes the heartbeat **at the end of each wake** (after the paint), not at the start, which costs an extra ~3-5 s of WiFi reconnect on render wakes (~0.07-0.11 mAh).
 
 Retained, so Tesserae can show "last known state" without the device being awake. The `kind`/`panel_*` keys feed Tesserae's **Discovered devices** strip: an unregistered `device_id` heartbeating on `tesserae/+/status` shows up with a one-click Register button, pre-populated from these fields. The Last Will (`{"state":"offline"}`, **non-retained**) lets live subscribers see ungraceful disconnects without ever overwriting the retained heartbeat — combine with `sleep_interval_s` and the heartbeat timestamp to distinguish "asleep on schedule" from "actually dead".
 

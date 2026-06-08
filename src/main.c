@@ -16,11 +16,14 @@
  */
 
 #include <string.h>
+#include <time.h>
 
 #include "driver/usb_serial_jtag.h"
 #include "esp_attr.h"
 #include "esp_log.h"
+#include "esp_netif_sntp.h"
 #include "esp_sleep.h"
+#include "esp_sntp.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -220,6 +223,53 @@ static void maybe_show_splash(esp_reset_reason_t reset_reason, bool has_creds)
     splash_show_logo();
 }
 
+/* ---------- wall-clock time + heartbeat ---------- */
+
+/* Lazy NTP sync. The RTC slow clock keeps running through deep sleep, so the
+ * system time set by SNTP persists across wakes -- only a true cold boot
+ * (RTC reset) actually has to hit pool.ntp.org. Any time() value past
+ * 2023-01-01 indicates the RTC has a sensible epoch. */
+static void ensure_time_synced(int wait_ms)
+{
+    if (time(NULL) > 1700000000LL) return;
+
+    esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    esp_err_t err = esp_netif_sntp_init(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "sntp init failed: %s; sleep_until will be omitted",
+                 esp_err_to_name(err));
+        return;
+    }
+
+    err = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(wait_ms));
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "ntp synced; epoch=%lld", (long long)time(NULL));
+    } else {
+        ESP_LOGW(TAG, "ntp sync timeout (%dms); sleep_until will be omitted",
+                 wait_ms);
+    }
+    esp_netif_sntp_deinit();
+}
+
+/* Format + publish the heartbeat right before sleep so sleep_until is
+ * wall-clock-accurate (Tesserae's smart-sync wire contract). Caller must
+ * have WiFi up; this function brings MQTT up one-shot, publishes retained
+ * QoS 1, waits for the PUBACK, tears MQTT down. Failures are logged and
+ * swallowed -- a missed heartbeat just means the server's next prediction
+ * falls back to its tolerance-window math for one cycle. */
+static void publish_heartbeat(int sleep_s, esp_reset_reason_t reset_reason)
+{
+    char hb[320];
+    time_t now = time(NULL);
+    time_t sleep_until = (now > 1700000000LL) ? (now + sleep_s) : 0;
+    heartbeat_format_json(hb, sizeof hb, sleep_s, reset_reason, sleep_until);
+
+    esp_err_t err = mqtt_publish_status(hb);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "heartbeat publish failed: %s", esp_err_to_name(err));
+    }
+}
+
 void app_main(void)
 {
     esp_reset_reason_t reset_reason = esp_reset_reason();
@@ -264,57 +314,87 @@ void app_main(void)
         return;
     }
 
-    char heartbeat[256];
-    heartbeat_format_json(heartbeat, sizeof(heartbeat),
-                          load_sleep_interval_s(), reset_reason);
+    int sleep_s = load_sleep_interval_s();
 
+    /* NTP carries across deep sleep via the RTC; only a true cold boot
+     * actually hits pool.ntp.org. If sync fails, sleep_until is omitted
+     * from the heartbeat and the server's smart-sync scheduler falls back
+     * to its tolerance-window math. */
+    ensure_time_synced(3000);
+
+    /* Fetch the retained URL only -- the heartbeat publishes at the END
+     * (after paint, if any) so its sleep_until reflects the actual sleep
+     * about to start instead of leading it by ~30 s of paint time. */
     mqtt_job_t job;
-    err = mqtt_fetch_retained(&job, heartbeat);
-    if (err != ESP_OK || !job.url[0]) {
-        ESP_LOGI(TAG, "no retained job (%s); back to sleep",
-                 esp_err_to_name(err));
-        wifi_sta_stop();
-        sleep_forever_or_until_timer();
-        return;
+    err = mqtt_fetch_retained(&job);
+    bool have_url = (err == ESP_OK && job.url[0]);
+    if (!have_url) {
+        ESP_LOGI(TAG, "no retained job (%s)", esp_err_to_name(err));
     }
 
+    bool need_paint = false;
     char hash[65];
-    sha256_hex(job.url, hash);
-    if (hash_matches_stored(hash)) {
-        ESP_LOGI(TAG, "url unchanged since last render; sleeping without refresh");
+    if (have_url) {
+        sha256_hex(job.url, hash);
+        if (hash_matches_stored(hash)) {
+            ESP_LOGI(TAG, "url unchanged since last render; skipping refresh");
+        } else {
+            need_paint = true;
+        }
+    }
+
+    if (need_paint) {
+        fetched_image_t img;
+        err = image_fetch(job.url, &img);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "fetch failed: %s", esp_err_to_name(err));
+            publish_heartbeat(sleep_s, reset_reason);   /* wifi still up */
+            wifi_sta_stop();
+            sleep_forever_or_until_timer();
+            return;
+        }
+
+        uint8_t *frame = NULL;
+        err = image_decode_to_frame(&img, job.url, &frame);
+        free(img.data);
+        if (err != ESP_OK || !frame) {
+            ESP_LOGE(TAG, "decode failed: %s", esp_err_to_name(err));
+            publish_heartbeat(sleep_s, reset_reason);   /* wifi still up */
+            wifi_sta_stop();
+            sleep_forever_or_until_timer();
+            return;
+        }
+
+        /* Free WiFi for the ~30 s panel refresh -- the single biggest
+         * battery saving in the render path (~80 mA otherwise). */
+        wifi_sta_stop();
+
+        ESP_ERROR_CHECK(epd_port_init());
+        epd_init();
+        epd_display(frame);
+        epd_sleep();
+        free(frame);
+
+        store_hash(hash);
+
+        /* Bring WiFi back up just long enough to publish the final
+         * heartbeat. ~3-5 s × ~80 mA = ~0.07-0.11 mAh extra per render
+         * wake -- the cost of wall-clock-accurate sleep_until for
+         * Tesserae's smart-sync scheduler. */
+        ESP_LOGI(TAG, "render OK; reconnecting wifi for post-paint heartbeat");
+        if (wifi_sta_connect_stored() == ESP_OK) {
+            publish_heartbeat(sleep_s, reset_reason);
+        } else {
+            ESP_LOGW(TAG, "post-paint wifi reconnect failed; heartbeat skipped");
+        }
         wifi_sta_stop();
         sleep_forever_or_until_timer();
         return;
     }
 
-    fetched_image_t img;
-    err = image_fetch(job.url, &img);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "fetch failed: %s", esp_err_to_name(err));
-        wifi_sta_stop();
-        sleep_forever_or_until_timer();
-        return;
-    }
-    /* Free WiFi as soon as we're done with the network -- ~80 mA savings
-     * during the multi-second panel render that follows. */
+    /* Hash-skip or no-URL path: WiFi+MQTT just came up for the fetch and
+     * the radio is still on; publish heartbeat without a reconnect cycle. */
+    publish_heartbeat(sleep_s, reset_reason);
     wifi_sta_stop();
-
-    uint8_t *frame = NULL;
-    err = image_decode_to_frame(&img, job.url, &frame);
-    free(img.data);
-    if (err != ESP_OK || !frame) {
-        ESP_LOGE(TAG, "decode failed: %s", esp_err_to_name(err));
-        sleep_forever_or_until_timer();
-        return;
-    }
-
-    ESP_ERROR_CHECK(epd_port_init());
-    epd_init();
-    epd_display(frame);
-    epd_sleep();
-    free(frame);
-
-    store_hash(hash);
-    ESP_LOGI(TAG, "render OK; entering deep sleep");
     sleep_forever_or_until_timer();
 }
