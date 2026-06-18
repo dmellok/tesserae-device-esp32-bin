@@ -331,4 +331,6 @@ The wake state machine, captive-portal provisioning, NVS schema, and battery cur
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+
+AGPL-3.0-or-later. See [LICENSE](LICENSE).
+
