@@ -1,5 +1,5 @@
 /*
- * tesserae-esp32-bin-client - battery-powered MQTT-driven e-paper client
+ * tesserae-device-esp32-bin - battery-powered MQTT-driven e-paper client
  * for the Tesserae composer/renderer pipeline. Subscribes to a retained
  * frame URL, downloads the panel-native 4bpp .bin, paints it, and goes
  * back to deep sleep.

@@ -1,4 +1,4 @@
-# tesserae-esp32-bin-client
+# tesserae-device-esp32-bin
 
 Battery-powered ESP32-S3 firmware that's the embedded client for the [Tesserae](https://github.com/dmellok/tesserae) server — drives a [Waveshare ESP32-S3-ePaper-13.3E6](https://www.waveshare.com/esp32-s3-epaper-13.3e6.htm) (13.3", 1200×1600, 6-colour Spectra E6 e-paper panel on an ESP32-S3-WROOM-2-N32R16V module).
 
@@ -85,7 +85,7 @@ Requires [PlatformIO](https://platformio.org/). ESP-IDF 5.x and the Xtensa toolc
 
 ```bash
 pio run                                          # build
-pio run -e tesserae-esp32-bin-client -t upload   # flash via USB
+pio run -e tesserae-device-esp32-bin -t upload   # flash via USB
 pio device monitor                               # 115200 baud, exception decoder enabled
 ```
 
@@ -297,7 +297,7 @@ mosquitto_pub -t tesserae/esp32/frame/bin -r \
 ## Project layout
 
 ```
-tesserae-esp32-bin-client/
+tesserae-device-esp32-bin/
 ├── platformio.ini             # board, partitions, monitor, FW_VERSION build flag
 ├── partitions.csv             # 14 MB factory app + NVS
 ├── sdkconfig.defaults         # PSRAM, mbedTLS cert bundle, MQTT 3.1.1

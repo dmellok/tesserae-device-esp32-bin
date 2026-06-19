@@ -31,7 +31,7 @@ fi
 TAG="v${VERSION}"
 
 if [[ "${1:-}" == "--notes-only" ]]; then
-    echo "## tesserae-esp32-bin-client ${TAG}"
+    echo "## tesserae-device-esp32-bin ${TAG}"
     echo
     git log --pretty=format:"- %s" "${TAG}~1..HEAD" 2>/dev/null \
         || git log --pretty=format:"- %s" -20
@@ -52,7 +52,7 @@ if ! git merge-base --is-ancestor origin/main HEAD; then
 fi
 
 PIO="${PIO:-$HOME/.platformio/penv/bin/pio}"
-ENV="${ENV:-tesserae-esp32-bin-client}"
+ENV="${ENV:-tesserae-device-esp32-bin}"
 
 # --- secrets.h isolation ----------------------------------------------------
 # secrets.h is #include'd by app_config.h, so any compile-time defines in it
