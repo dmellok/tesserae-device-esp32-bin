@@ -12,6 +12,7 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -27,6 +28,15 @@ static TaskHandle_t s_dns_task = NULL;
 static httpd_handle_t s_httpd = NULL;
 static esp_netif_t *s_ap_netif = NULL;
 static bool s_mdns_up = false;
+
+/* Idle tracker for PROVISION_PORTAL_TIMEOUT_S. Each STA-connect bumps the
+ * counter and pushes the deadline out; when the last STA leaves we reset
+ * the deadline to now + PROVISION_PORTAL_TIMEOUT_S. A user actively in the
+ * captive portal therefore never gets timed out -- only an abandoned AP
+ * with no phone joined eventually trips. */
+static int        s_ap_clients = 0;
+static int64_t    s_idle_deadline_us = 0;
+static esp_event_handler_instance_t s_ap_evt_handle = NULL;
 
 /* Pre-scan cache: filled once at portal start (in STA mode, before the AP
  * comes up) and rendered into the form's <select> so the user can click a
@@ -583,6 +593,53 @@ static void stop_mdns(void)
     if (s_mdns_up) { mdns_free(); s_mdns_up = false; }
 }
 
+/* ---------- AP-idle tracker ---------- */
+
+/* WiFi event handler for SoftAP STA join/leave. Each join bumps the client
+ * counter (and disables the idle deadline while >=1 STA is associated);
+ * each leave decrements it and, if no STAs are left, restarts the
+ * PROVISION_PORTAL_TIMEOUT_S idle window. */
+static void on_ap_event(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    if (base != WIFI_EVENT) return;
+
+    if (id == WIFI_EVENT_AP_STACONNECTED) {
+        s_ap_clients++;
+        s_idle_deadline_us = 0;   /* clients present -> no idle timeout */
+        ESP_LOGI(TAG, "AP STA connected (clients=%d); idle timer paused",
+                 s_ap_clients);
+    } else if (id == WIFI_EVENT_AP_STADISCONNECTED) {
+        if (s_ap_clients > 0) s_ap_clients--;
+        if (s_ap_clients == 0) {
+            s_idle_deadline_us = esp_timer_get_time() +
+                (int64_t)PROVISION_PORTAL_TIMEOUT_S * 1000000LL;
+            ESP_LOGI(TAG, "AP STA disconnected (no clients); "
+                          "idle countdown restarted (%ds)",
+                     PROVISION_PORTAL_TIMEOUT_S);
+        } else {
+            ESP_LOGI(TAG, "AP STA disconnected (clients=%d)", s_ap_clients);
+        }
+    }
+}
+
+static void idle_tracker_install(void)
+{
+    s_ap_clients = 0;
+    s_idle_deadline_us = esp_timer_get_time() +
+        (int64_t)PROVISION_PORTAL_TIMEOUT_S * 1000000LL;
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(
+        WIFI_EVENT, ESP_EVENT_ANY_ID, &on_ap_event, NULL, &s_ap_evt_handle));
+}
+
+static void idle_tracker_uninstall(void)
+{
+    if (s_ap_evt_handle) {
+        esp_event_handler_instance_unregister(
+            WIFI_EVENT, ESP_EVENT_ANY_ID, s_ap_evt_handle);
+        s_ap_evt_handle = NULL;
+    }
+}
+
 /* ---------- public API ---------- */
 
 esp_err_t provisioning_run_blocking(void)
@@ -595,17 +652,33 @@ esp_err_t provisioning_run_blocking(void)
     do_wifi_scan();
 
     start_ap();
+    idle_tracker_install();
     start_http(/* captive */ true);
     xTaskCreate(dns_hijack_task, "dns_hijack", 4096, NULL, 5, &s_dns_task);
 
-    ESP_LOGI(TAG, "captive portal up; waiting up to %ds for submission",
+    ESP_LOGI(TAG, "captive portal up; %ds idle timeout (resets on each STA join)",
              PROVISION_PORTAL_TIMEOUT_S);
-    EventBits_t bits = xEventGroupWaitBits(
-        s_done, BIT_CREDS_SAVED, pdFALSE, pdFALSE,
-        pdMS_TO_TICKS(PROVISION_PORTAL_TIMEOUT_S * 1000));
+
+    /* Poll in 1 s chunks so we can react to either a credential save OR the
+     * idle deadline elapsing without a client connected. The idle deadline
+     * is zeroed by the AP event handler whenever >=1 STA is associated. */
+    EventBits_t bits = 0;
+    while (1) {
+        bits = xEventGroupWaitBits(s_done, BIT_CREDS_SAVED,
+                                   pdFALSE, pdFALSE, pdMS_TO_TICKS(1000));
+        if (bits & BIT_CREDS_SAVED) break;
+        if (s_idle_deadline_us != 0 &&
+            esp_timer_get_time() > s_idle_deadline_us) {
+            ESP_LOGW(TAG, "captive portal idle for %ds with no client; giving up",
+                     PROVISION_PORTAL_TIMEOUT_S);
+            break;
+        }
+    }
 
     /* Give the browser a beat to render the "saved" page before we tear AP down. */
     vTaskDelay(pdMS_TO_TICKS(500));
+
+    idle_tracker_uninstall();
 
     if (s_dns_task) { vTaskDelete(s_dns_task); s_dns_task = NULL; }
     if (s_httpd)    { httpd_stop(s_httpd);     s_httpd = NULL; }

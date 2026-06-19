@@ -72,9 +72,12 @@
 #define WIFI_CONNECT_RETRIES   5
 #define WIFI_CONNECT_TIMEOUT_MS 15000
 
-/* How long the provisioning portal stays up after a failed STA
- * connect. Power gets burned the whole time, so don't make it huge. */
-#define PROVISION_PORTAL_TIMEOUT_S  (10 * 60)
+/* Max idle window the captive portal stays up with no client associated
+ * to the SoftAP. The timer resets each time a STA joins the AP, so a user
+ * actively filling in the form never times out. After this many seconds
+ * with no client connected, the device deep-sleeps with no wakeup source
+ * configured -- only a RESET / EXT button press boots it again. */
+#define PROVISION_PORTAL_TIMEOUT_S  (15 * 60)
 
 /* SoftAP credentials shown to the user during provisioning. */
 #define PROVISION_AP_SSID    "Tesserae-Setup"

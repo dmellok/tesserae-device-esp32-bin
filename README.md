@@ -171,6 +171,8 @@ All settings (WiFi SSID + password, MQTT broker URI + credentials, and `device_i
 
 **First-boot captive portal.** With no WiFi creds in NVS (fresh flash, or after `idf.py erase-flash`), the device brings up a SoftAP named `Tesserae-Setup` (password `tesserae`). Join it from a phone; the captive-portal prompt opens the form automatically. After submit the device reboots and joins your network.
 
+The portal has a **15-minute idle timeout** — the timer resets each time a phone associates with the AP, so a user actively in the form never times out, but an abandoned AP eventually shuts down. On expiry the device **deep-sleeps with no wakeup source configured**; only a RESET button press (chip EN line) brings it back. That avoids the alternative of retrying every 15 min on battery and flattening the cell while no one's around to set it up.
+
 **Always-on settings editor (double-tap RESET).** Once the device is on the LAN you can re-open the form without erasing NVS: **tap the RESET button twice in quick succession** (the second tap within the first wake's few-second window). Instead of painting, the device serves the form on its STA IP and advertises it over mDNS at:
 
 ```

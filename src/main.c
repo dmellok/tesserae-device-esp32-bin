@@ -196,11 +196,18 @@ static void run_provisioning_then_reboot(void)
     esp_err_t err = provisioning_run_blocking();
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "creds saved; rebooting to use them");
-    } else {
-        ESP_LOGW(TAG, "portal timed out; sleeping and trying again later");
+        esp_restart();
+        /* not reached */
     }
-    /* Either way: reboot so STA path starts fresh next time. */
-    esp_restart();
+
+    /* Portal expired with no client ever joining (or no submission). Don't
+     * spin the radio retrying every N minutes -- power down completely and
+     * require a manual RESET to come back. The board's RESET button (chip
+     * EN line) causes a fresh boot which re-enters the portal. */
+    ESP_LOGW(TAG, "captive portal expired idle; deep sleep until RESET button");
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+    esp_deep_sleep_start();
+    /* not reached */
 }
 
 /* Show the splash on a true cold boot -- power-on or RESET button. Skip
