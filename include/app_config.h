@@ -60,9 +60,11 @@
 #define FW_VERSION         "0.0.0-dev"
 #endif
 
-/* How long to deep-sleep between MQTT checks. 15 minutes is a good
- * trade for a 6-color panel that itself takes ~30s to refresh. */
-#define SLEEP_INTERVAL_S   (15 * 60)
+/* How long to deep-sleep between MQTT checks. 1 minute is the short
+ * dev-friendly default; production cadence is normally pushed
+ * server-side via the config topic (e.g. 15 min for a 6-colour panel
+ * whose refresh itself takes ~30s) and persisted to NVS. */
+#define SLEEP_INTERVAL_S   60
 
 /* Cap on how long we'll wait for a retained MQTT message after
  * subscribing, before giving up and going back to sleep. */
