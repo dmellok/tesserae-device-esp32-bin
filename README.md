@@ -1,3 +1,5 @@
+> **Heads up:** since this repo was started, an official Tesserae-native firmware covering the whole reTerminal E-Series (E1001 / E1002 / E1003 / E1004) plus the XIAO ePaper family (EE02, XIAO 7.5") has landed at [`tesserae-device-firmware`](https://github.com/dmellok/tesserae-device-firmware), with a browser flasher at [tesserae.ink/flash](https://tesserae.ink/flash). One codebase across all of them so fixes and features land everywhere at once. This repo may still be useful as an alternative or reference; see the PR discussion for context.
+
 # tesserae-device-esp32-bin
 
 Battery-powered ESP32-S3 firmware that's the embedded client for the [Tesserae](https://github.com/dmellok/tesserae) server — drives a [Waveshare ESP32-S3-ePaper-13.3E6](https://www.waveshare.com/esp32-s3-epaper-13.3e6.htm) (13.3", 1200×1600, 6-colour Spectra E6 e-paper panel on an ESP32-S3-WROOM-2-N32R16V module).
